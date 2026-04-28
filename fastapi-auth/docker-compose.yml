@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  # 🗄️ MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-oauth
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${DB_NAME:-auth_db}
+      MYSQL_USER: ${DB_USER:-appuser}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-apppass}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql  # Optional: seed data
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - oauth-net
+
+  # ⚡ FastAPI Backend
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi-oauth
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # App config
+      - APP_URL=${APP_URL:-http://localhost:3000}
+      - API_URL=${API_URL:-http://localhost:8000}
+      - JWT_SECRET=${JWT_SECRET:-dev_secret_change_in_prod}
+      - NODE_ENV=${NODE_ENV:-development}
+      
+      # Database (use service name 'mysql', NOT localhost!)
+      - DATABASE_URL=mysql+pymysql://${DB_USER:-appuser}:${DB_PASSWORD:-apppass}@mysql:3306/${DB_NAME:-auth_db}
+      
+      # OAuth credentials
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+    volumes:
+      - .:/app  # Hot reload for development
+      - /app/__pycache__
+      - /app/venv
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo '⏳ Waiting for MySQL...' &&
+        until python -c \"import pymysql; pymysql.connect(host='mysql', user='${DB_USER:-appuser}', password='${DB_PASSWORD:-apppass}')\" 2>/dev/null; do
+          sleep 2;
+        done &&
+        echo '✅ MySQL ready!' &&
+        uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    networks:
+      - oauth-net
+
+networks:
+  oauth-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
